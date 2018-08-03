@@ -41,6 +41,7 @@ class FaceTracker():
     def __init__(self, frame, face):
         (x,y,w,h) = face
         self.face = (x,y,w,h)
+        # Arbitrarily picked KCF tracking
         self.tracker = cv2.TrackerKCF_create()
         self.tracker.init(frame, self.face)
     
@@ -162,4 +163,12 @@ def run(event_interval=6):
 
 
 if __name__ == '__main__':
-    run()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--interval", "-i", type=int,
+        action='store',
+        default=6,
+        help='Detection interval in seconds, default=6')
+
+    args = parser.parse_args()
+    run(args.interval)
