@@ -2,6 +2,11 @@ import cv2
 import sys, datetime
 from time import sleep
 
+import numpy as np
+
+GREEN = (0, 255, 0)
+BLUE = (255, 0, 0)
+RED = (0, 0, 255)
 
 def draw_boxes(frame, boxes, color=(0,255,0)):
     for (x, y, w, h) in boxes:
@@ -16,7 +21,7 @@ def resize_image(image, size_limit=500.0):
         return _img
     return image
 
-class FaceDetect():
+class FaceDetector():
 
     def __init__(self, cascPath="./haarcascade_frontalface_default.xml"):
         self.faceCascade = cv2.CascadeClassifier(cascPath)
@@ -40,23 +45,64 @@ class FaceTracker():
         self.tracker.init(frame, self.face)
     
     def update(self, frame):
-        self.face = self.tracker.update(frame)
+        _, self.face = self.tracker.update(frame)
         return self.face
 
+class Controller():
+    
+    def __init__(self, event_interval=6):
+        self.event_interval = event_interval
+        self.last_event = datetime.datetime.now()
 
-# update states
-DETECT_INTERVAL= 6
-LAST_DETECT = datetime.datetime.now()
+    def trigger(self):
+        """Return True if should trigger event"""
+        return self.get_seconds_since() > self.event_interval
+    
+    def get_seconds_since(self):
+        current = datetime.datetime.now()
+        seconds = (current - self.last_event).seconds
+        return seconds
 
-def should_run_detector():
-    current = datetime.datetime.now()
-    seconds = (current - LAST_DETECT).seconds
-    should = seconds > DETECT_INTERVAL
-    # print("LAST: %s, current: %s, seconds: %s, should: %s" % (LAST_DETECT, current, seconds, should))
-    return should
+    def reset(self):
+        self.last_event = datetime.datetime.now()
+
+class Pipeline():
+
+    def __init__(self, event_interval=6):
+        self.controller = Controller(event_interval=event_interval)    
+        self.detector = FaceDetector()
+        self.trackers = []
+    
+    def detect_and_track(self, frame):
+        # get faces 
+        faces = self.detector.detect(frame)
+
+        # reset timer
+        self.controller.reset()
+
+        # get trackers
+        self.trackers = [FaceTracker(frame, face) for face in faces]
+
+        # return state = True for new boxes
+        # if no faces detected, faces will be a tuple.
+        new = type(faces) is not tuple
+
+        return faces, new
+    
+    def track(self, frame):
+        boxes = [t.update(frame) for t in self.trackers]
+        # return state = False for existing boxes only
+        return boxes, False
+    
+    def boxes_for_frame(self, frame):
+        if self.controller.trigger():
+            return self.detect_and_track(frame)
+        else:
+            return self.track(frame)
 
 
-def run():
+
+def run(event_interval=6):
     video_capture = cv2.VideoCapture(0)
 
     # exit if video not opened
@@ -70,35 +116,17 @@ def run():
         print('Error reading video')
         sys.exit()
 
-    # init detector    
-    detector = FaceDetect()
+    # init detection pipeline
+    pipeline = Pipeline(event_interval=event_interval)
 
-    def get_faces_trackers(frame):
-        print("running detector...")
-        # get faces 
-        faces = detector.detect(frame)
-
-        global LAST_DETECT
-        LAST_DETECT = datetime.datetime.now()
-
-        # get trackers
-        # trackers = [FaceTracker(frame, face) for face in faces]
-        trackers = []
-        for face in faces:
-            print("adding tracker for face: ", face)
-            (x,y,w,h) = face
-            tracker = cv2.TrackerKCF_create()
-            tracker.init(frame, (x,y,w,h))
-            trackers.append(tracker)
-        return faces, trackers
-
-    # start detection
-    # read a couple frames to cold-start
-    faces = None
-    while faces is None:
+    # hot start detection
+    # read some frames to get first detection
+    faces = ()
+    detected = False
+    while not detected:
         _, frame = video_capture.read()
-        faces, trackers = get_faces_trackers(frame)
-        print("cold start: %s" % faces)
+        faces, detected = pipeline.detect_and_track(frame)
+        print("hot start; ", faces, type(faces), "size: ", np.array(faces).size)
 
     draw_boxes(frame, faces)
     
@@ -109,14 +137,16 @@ def run():
         # Capture frame-by-frame
         _, frame = video_capture.read()
 
-        # check if tracking or detect
-        if should_run_detector():
-            faces, trackers = get_faces_trackers(frame)
-            draw_boxes(frame, faces)
-        else:
-            boxes = [t.update(frame)[1] for t in trackers]
-            print("tracking: %s" % boxes)
-            draw_boxes(frame, boxes, (255,0,0)) # draw blue for tracking
+        # update pipeline
+        boxes, detected_new = pipeline.boxes_for_frame(frame)
+
+        # logging
+        state = "DETECTOR" if detected_new else "TRACKING"
+        print("[%s] boxes: %s" % (state, boxes))
+
+        # update screen
+        color = GREEN if detected_new else BLUE
+        draw_boxes(frame, boxes, color)
 
         # Display the resulting frame
         cv2.imshow('Video', frame)
